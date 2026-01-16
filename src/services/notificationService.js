@@ -2,6 +2,33 @@ const { db, auth } = require('../firebaseAdmin');
 const admin = require('firebase-admin');
 
 /**
+ * Notification messages in different languages
+ */
+const NOTIFICATION_MESSAGES = {
+  en: {
+    alertTitle: 'Emergency Alert',
+    alertBody: (userName) => `${userName} has not checked in and may need help!`,
+    reminderTitle: 'Check-in Reminder',
+    reminderBody: 'Please check in to let your contacts know you are okay!',
+  },
+  vi: {
+    alertTitle: 'Cảnh báo khẩn cấp',
+    alertBody: (userName) => `${userName} chưa check-in và có thể cần trợ giúp!`,
+    reminderTitle: 'Nhắc nhở Check-in',
+    reminderBody: 'Hãy check-in để người thân biết bạn vẫn ổn!',
+  },
+};
+
+/**
+ * Get notification messages based on user's language setting
+ * @param {string} language - User's language preference ('en', 'vi')
+ * @returns {object} Notification messages object
+ */
+function getMessages(language) {
+  return NOTIFICATION_MESSAGES[language] || NOTIFICATION_MESSAGES['en'];
+}
+
+/**
  * Send push notification via FCM
  * @param {string} fcmToken - FCM device token
  * @param {object} notification - { title, body }
@@ -122,6 +149,7 @@ async function sendPushToLinkedContacts(userId, userData) {
       const linkedUserData = linkedUserDoc.data();
       const fcmToken = linkedUserData.fcmToken;
       const linkedUserName = linkedUserData.displayName || linkedUserData.email || linkedUid;
+      const linkedUserLanguage = linkedUserData.language || linkedUserData.settings?.language || 'en';
 
       if (!fcmToken) {
         console.log(`[Notification]     → SKIP: ${linkedUserName} has no FCM token`);
@@ -133,12 +161,15 @@ async function sendPushToLinkedContacts(userId, userData) {
         continue;
       }
 
-      console.log(`[Notification]     → SENDING to ${linkedUserName}`);
+      console.log(`[Notification]     → SENDING to ${linkedUserName} (lang: ${linkedUserLanguage})`);
+
+      // Get localized messages based on recipient's language
+      const messages = getMessages(linkedUserLanguage);
 
       // Send push notification
       const notification = {
-        title: 'AliveCheck Alert',
-        body: `${userName} has not checked in and may need help!`,
+        title: messages.alertTitle,
+        body: messages.alertBody(userName),
       };
 
       const data = {
@@ -198,9 +229,13 @@ async function sendReminderToUser(userId, userData) {
     return { success: false, error: 'NO_FCM_TOKEN' };
   }
 
+  // Get user's language preference
+  const userLanguage = userData.language || userData.settings?.language || 'en';
+  const messages = getMessages(userLanguage);
+
   const notification = {
-    title: 'Check-in Reminder',
-    body: 'Please check in to let your contacts know you are okay!',
+    title: messages.reminderTitle,
+    body: messages.reminderBody,
   };
 
   const data = {
