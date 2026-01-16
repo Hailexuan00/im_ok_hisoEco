@@ -88,21 +88,37 @@ async function checkAndUpdateUserStatus(userId, userData) {
   }
 
   // Already overdue, check if we need to create another alert
-  // (only create new alert if no pending alerts exist)
-  const pendingAlerts = await db
+  // Create new alert if:
+  // 1. No pending alerts exist, OR
+  // 2. Last alert was created more than 30 minutes ago (reminder interval)
+  const REMINDER_INTERVAL_MINUTES = 30;
+
+  const alertsSnapshot = await db
     .collection('users')
     .doc(userId)
     .collection('alerts')
-    .where('status', '==', 'pending')
+    .orderBy('createdAt', 'desc')
     .limit(1)
     .get();
 
-  if (pendingAlerts.empty) {
-    // No pending alerts, create a new one
+  if (alertsSnapshot.empty) {
+    // No alerts at all, create one
     await createAlert(userId, userData);
     return { isOverdue: true, alertCreated: true };
   }
 
+  const lastAlert = alertsSnapshot.docs[0].data();
+  const lastAlertCreatedAt = new Date(lastAlert.createdAt);
+  const minutesSinceLastAlert = (now.getTime() - lastAlertCreatedAt.getTime()) / (1000 * 60);
+
+  // Create new alert if last one was created more than 30 minutes ago
+  if (minutesSinceLastAlert >= REMINDER_INTERVAL_MINUTES) {
+    console.log(`[OverdueCheck] User ${userId} still overdue after ${Math.floor(minutesSinceLastAlert)} minutes, creating new alert`);
+    await createAlert(userId, userData);
+    return { isOverdue: true, alertCreated: true };
+  }
+
+  console.log(`[OverdueCheck] User ${userId} has recent alert (${Math.floor(minutesSinceLastAlert)} min ago), skipping`);
   return { isOverdue: true, alertCreated: false };
 }
 
