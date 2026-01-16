@@ -14,6 +14,7 @@
 | Push Notifications | Firebase Cloud Messaging (FCM) |
 | Hosting | Railway |
 | Scheduler | node-cron |
+| **Production URL** | https://beenotebemd01.up.railway.app |
 
 ---
 
