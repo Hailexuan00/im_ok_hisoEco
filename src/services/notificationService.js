@@ -67,6 +67,10 @@ async function sendPushNotification(fcmToken, notification, data = {}) {
  */
 async function sendPushToLinkedContacts(userId, userData) {
   const results = [];
+  const userName = userData.displayName || userData.email || 'Someone';
+
+  console.log(`[Notification] ========================================`);
+  console.log(`[Notification] Sending alerts for OVERDUE USER: ${userName} (${userId})`);
 
   try {
     // Get all contacts with type 'app' (linked users)
@@ -79,16 +83,21 @@ async function sendPushToLinkedContacts(userId, userData) {
 
     if (contactsSnapshot.empty) {
       console.log(`[Notification] No linked contacts found for user ${userId}`);
+      console.log(`[Notification] ========================================`);
       return results;
     }
 
-    const userName = userData.displayName || userData.email || 'Someone';
+    console.log(`[Notification] Found ${contactsSnapshot.size} contacts to notify:`);
 
     for (const contactDoc of contactsSnapshot.docs) {
       const contact = contactDoc.data();
       const linkedUid = contact.linkedUid;
+      const contactName = contact.name || 'Unknown';
+
+      console.log(`[Notification]   - Contact: ${contactName}, linkedUid: ${linkedUid}`);
 
       if (!linkedUid) {
+        console.log(`[Notification]     → SKIP: No linkedUid`);
         results.push({
           contactId: contactDoc.id,
           status: 'failed',
@@ -101,6 +110,7 @@ async function sendPushToLinkedContacts(userId, userData) {
       const linkedUserDoc = await db.collection('users').doc(linkedUid).get();
 
       if (!linkedUserDoc.exists) {
+        console.log(`[Notification]     → SKIP: User not found in database`);
         results.push({
           contactId: contactDoc.id,
           status: 'failed',
@@ -111,8 +121,10 @@ async function sendPushToLinkedContacts(userId, userData) {
 
       const linkedUserData = linkedUserDoc.data();
       const fcmToken = linkedUserData.fcmToken;
+      const linkedUserName = linkedUserData.displayName || linkedUserData.email || linkedUid;
 
       if (!fcmToken) {
+        console.log(`[Notification]     → SKIP: ${linkedUserName} has no FCM token`);
         results.push({
           contactId: contactDoc.id,
           status: 'failed',
@@ -120,6 +132,8 @@ async function sendPushToLinkedContacts(userId, userData) {
         });
         continue;
       }
+
+      console.log(`[Notification]     → SENDING to ${linkedUserName}`);
 
       // Send push notification
       const notification = {
@@ -136,6 +150,7 @@ async function sendPushToLinkedContacts(userId, userData) {
       const sendResult = await sendPushNotification(fcmToken, notification, data);
 
       if (sendResult.success) {
+        console.log(`[Notification]     → SUCCESS: Sent to ${linkedUserName}`);
         results.push({
           contactId: contactDoc.id,
           linkedUid,
@@ -143,6 +158,7 @@ async function sendPushToLinkedContacts(userId, userData) {
           messageId: sendResult.messageId,
         });
       } else {
+        console.log(`[Notification]     → FAILED: ${sendResult.error}`);
         results.push({
           contactId: contactDoc.id,
           linkedUid,
@@ -161,6 +177,7 @@ async function sendPushToLinkedContacts(userId, userData) {
       }
     }
 
+    console.log(`[Notification] ========================================`);
     return results;
   } catch (error) {
     console.error(`[Notification] Error sending to linked contacts:`, error);
