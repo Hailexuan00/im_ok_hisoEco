@@ -3,6 +3,7 @@ const cors = require('cors');
 require('dotenv').config();
 
 const { db } = require('./firebaseAdmin');
+const { initializeScheduler } = require('./jobs/scheduler');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -43,6 +44,9 @@ app.use((req, res) => {
 
 app.listen(PORT, () => {
   console.log(`Server is running on port ${PORT}`);
+
+  // Initialize scheduled jobs
+  initializeScheduler();
 });
 
 module.exports = app;
