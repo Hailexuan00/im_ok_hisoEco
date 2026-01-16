@@ -13,8 +13,9 @@
 | Database | Firebase Firestore |
 | Push Notifications | Firebase Cloud Messaging (FCM) |
 | Hosting | Railway |
-| Scheduler | node-cron |
+| Scheduler | External Cron (cron-job.org) |
 | **Production URL** | https://imokhisoeco-production.up.railway.app |
+| **Cron Endpoint** | GET /api/notifications/cron |
 
 ---
 

@@ -115,6 +115,41 @@ router.post('/trigger-overdue-check', async (req, res) => {
 });
 
 /**
+ * GET /api/notifications/cron
+ * Endpoint for external cron services (cron-job.org, UptimeRobot, etc.)
+ * Runs both overdue check and escalation processing
+ */
+router.get('/cron', async (req, res) => {
+  const startTime = Date.now();
+  console.log('[CRON] External cron triggered at', new Date().toISOString());
+
+  try {
+    // Run overdue check
+    const overdueResult = await checkOverdueUsers();
+
+    // Run escalation processing
+    await processEscalations();
+
+    const duration = Date.now() - startTime;
+
+    res.json({
+      ok: true,
+      message: 'Cron job completed',
+      overdueCount: overdueResult.overdueCount,
+      alertsCreated: overdueResult.alertsCreated,
+      durationMs: duration,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error) {
+    console.error('[CRON] Error:', error);
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
  * POST /api/notifications/trigger-escalations
  * Manually trigger escalation processing
  */
