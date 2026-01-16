@@ -33,6 +33,9 @@ Storage Bucket: im-ok-4b2d2.firebasestorage.app
 PORT=3000
 NODE_ENV=production
 FIREBASE_SERVICE_ACCOUNT_B64=<base64-encoded-service-account-json>
+SENDGRID_API_KEY=<your-sendgrid-api-key>
+SENDGRID_FROM_EMAIL=noreply@yourdomain.com
+SENDGRID_FROM_NAME=AliveCheck
 ```
 
 ### How to get FIREBASE_SERVICE_ACCOUNT_B64:
@@ -493,6 +496,7 @@ railway logs
 ```json
 {
   "dependencies": {
+    "@sendgrid/mail": "^8.x",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
@@ -510,8 +514,8 @@ railway logs
 ## 15. Pending Tasks
 
 ### High Priority
-- [ ] Test full escalation flow on Railway
-- [ ] Implement SendGrid email integration
+- [x] Test full escalation flow on Railway
+- [x] Implement SendGrid email integration
 - [ ] Implement Twilio SMS integration
 - [ ] Add authentication middleware
 
@@ -529,6 +533,10 @@ railway logs
 ---
 
 ## 16. Changelog
+
+### 2026-01-17
+- Implement SendGrid email integration for escalation step
+- Fix push notification immediate sending on alert creation
 
 ### 2026-01-16
 - Initial backend setup with Express.js

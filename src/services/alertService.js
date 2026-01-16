@@ -1,6 +1,7 @@
 const { db } = require('../firebaseAdmin');
 const admin = require('firebase-admin');
 const { sendPushToLinkedContacts } = require('./notificationService');
+const { sendEmailToContacts } = require('./emailService');
 
 /**
  * Execute push notification step
@@ -27,14 +28,26 @@ async function executePushStep(userId, userData) {
 }
 
 /**
- * Execute email step (TODO: Implement SendGrid)
+ * Execute email step via SendGrid
  */
 async function executeEmailStep(userId, userData) {
-  // TODO: Implement SendGrid integration
-  console.log(`[Email] Email sending not implemented yet for user ${userId}`);
+  console.log(`[Email] Executing email step for user ${userId}`);
+  const results = await sendEmailToContacts(userId, userData);
+
+  console.log(`[Email] Results:`, JSON.stringify(results));
+
+  const successCount = results.filter(r => r.status === 'sent').length;
+  const totalCount = results.length;
+
+  if (totalCount === 0) {
+    console.log(`[Email] No email contacts found for user ${userId}`);
+    return { success: false, error: 'NO_EMAIL_CONTACTS' };
+  }
+
   return {
-    success: false,
-    error: 'NOT_IMPLEMENTED',
+    success: successCount > 0,
+    messageId: results.map(r => r.messageId).filter(Boolean).join(','),
+    error: successCount === 0 ? 'ALL_FAILED' : null,
   };
 }
 
