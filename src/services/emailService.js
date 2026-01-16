@@ -1,29 +1,54 @@
+const nodemailer = require('nodemailer');
 const { db } = require('../firebaseAdmin');
 
 /**
- * Queue email via Firebase Trigger Email Extension
+ * Create email transporter using Gmail SMTP
  *
- * This uses Firebase's "Trigger Email" extension which watches
- * a Firestore collection (default: "mail") and sends emails automatically.
- *
- * Setup required:
- * 1. Install "Trigger Email" extension in Firebase Console
- * 2. Configure SMTP settings (Gmail, SendGrid, etc.)
- * 3. Extension will watch "mail" collection and send emails
- *
+ * Required environment variables:
+ * - GMAIL_USER: your-email@gmail.com
+ * - GMAIL_APP_PASSWORD: 16-character app password from Google
+ */
+function createTransporter() {
+  if (!process.env.GMAIL_USER || !process.env.GMAIL_APP_PASSWORD) {
+    console.warn('[Email] GMAIL_USER or GMAIL_APP_PASSWORD not configured');
+    return null;
+  }
+
+  return nodemailer.createTransport({
+    service: 'gmail',
+    auth: {
+      user: process.env.GMAIL_USER,
+      pass: process.env.GMAIL_APP_PASSWORD,
+    },
+  });
+}
+
+/**
+ * Send email notification using Nodemailer with Gmail
  * @param {string} toEmail - Recipient email address
  * @param {object} alertData - Alert information
  * @param {object} fromUserData - User who is overdue
  * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
  */
 async function sendEmailNotification(toEmail, alertData, fromUserData) {
-  const userName = fromUserData.displayName || fromUserData.email || 'Someone';
+  const transporter = createTransporter();
 
-  const emailData = {
+  if (!transporter) {
+    console.log(`[Email] Skipping email to ${toEmail} - Gmail not configured`);
+    return {
+      success: false,
+      error: 'GMAIL_NOT_CONFIGURED',
+    };
+  }
+
+  const userName = fromUserData.displayName || fromUserData.email || 'Someone';
+  const fromEmail = process.env.GMAIL_USER;
+
+  const mailOptions = {
+    from: `"AliveCheck" <${fromEmail}>`,
     to: toEmail,
-    message: {
-      subject: `⚠️ AliveCheck Alert: ${userName} may need help`,
-      text: `
+    subject: `⚠️ AliveCheck Alert: ${userName} may need help`,
+    text: `
 AliveCheck Alert
 
 ${userName} has not checked in and may need your help.
@@ -36,8 +61,8 @@ What you can do:
 - Contact emergency services if you're concerned
 
 This is an automated alert from AliveCheck.
-      `.trim(),
-      html: `
+    `.trim(),
+    html: `
 <!DOCTYPE html>
 <html>
 <head>
@@ -73,26 +98,20 @@ This is an automated alert from AliveCheck.
   </div>
 </body>
 </html>
-      `.trim(),
-    },
-    createdAt: new Date().toISOString(),
-    fromUserId: fromUserData.uid || null,
-    fromUserName: userName,
+    `.trim(),
   };
 
   try {
-    console.log(`[Email] Queuing email to ${toEmail} for user ${userName}`);
+    console.log(`[Email] Sending email to ${toEmail} for user ${userName}`);
+    const info = await transporter.sendMail(mailOptions);
 
-    // Add to "mail" collection - Firebase Trigger Email extension will pick it up
-    const mailRef = await db.collection('mail').add(emailData);
-
-    console.log(`[Email] Email queued successfully, docId: ${mailRef.id}`);
+    console.log(`[Email] Successfully sent to ${toEmail}, messageId: ${info.messageId}`);
     return {
       success: true,
-      messageId: mailRef.id,
+      messageId: info.messageId,
     };
   } catch (error) {
-    console.error(`[Email] Error queuing email to ${toEmail}:`, error.message);
+    console.error(`[Email] Error sending to ${toEmail}:`, error.message);
     return {
       success: false,
       error: error.message,

@@ -33,6 +33,8 @@ Storage Bucket: im-ok-4b2d2.firebasestorage.app
 PORT=3000
 NODE_ENV=production
 FIREBASE_SERVICE_ACCOUNT_B64=<base64-encoded-service-account-json>
+GMAIL_USER=your-email@gmail.com
+GMAIL_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
 ```
 
 ### How to get FIREBASE_SERVICE_ACCOUNT_B64:
@@ -45,23 +47,18 @@ FIREBASE_SERVICE_ACCOUNT_B64=<base64-encoded-service-account-json>
    ```
 5. Copy the output to Railway Variables
 
-### Firebase Trigger Email Extension (for sending emails)
-Email gửi qua Firebase Extension "Trigger Email". Cách setup:
-
-1. Vào Firebase Console > Extensions > Browse Extensions
-2. Tìm "Trigger Email" và cài đặt
-3. Cấu hình SMTP (có thể dùng Gmail):
-   - SMTP server: `smtp.gmail.com`
-   - SMTP port: `587`
-   - Email: your-gmail@gmail.com
-   - Password: App Password (không phải password gmail thường)
-4. Collection path: `mail` (default)
+### Gmail App Password (for sending emails)
+Email gửi trực tiếp từ backend qua Gmail SMTP (Nodemailer). **100% miễn phí, 500 email/ngày.**
 
 **Cách tạo Gmail App Password:**
-1. Vào Google Account > Security
-2. Bật 2-Step Verification
-3. App passwords > Create
-4. Copy password và dùng trong Firebase Extension config
+1. Vào https://myaccount.google.com/security
+2. Bật **2-Step Verification** (bắt buộc)
+3. Quay lại Security → App passwords
+4. Select app: **Mail** → Select device: **Other** → Nhập "AliveCheck"
+5. Click **Generate** → Copy password 16 ký tự (dạng: xxxx-xxxx-xxxx-xxxx)
+6. Thêm vào Railway Variables:
+   - `GMAIL_USER`: your-email@gmail.com
+   - `GMAIL_APP_PASSWORD`: xxxx-xxxx-xxxx-xxxx
 
 ---
 
@@ -515,7 +512,8 @@ railway logs
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
     "firebase-admin": "^13.6.0",
-    "node-cron": "^4.2.1"
+    "node-cron": "^4.2.1",
+    "nodemailer": "^6.x"
   },
   "devDependencies": {
     "nodemon": "^3.1.11"
@@ -549,7 +547,7 @@ railway logs
 ## 16. Changelog
 
 ### 2026-01-17
-- Implement email via Firebase Trigger Email Extension
+- Implement email via Nodemailer + Gmail SMTP (100% free)
 - Fix push notification immediate sending on alert creation
 
 ### 2026-01-16
