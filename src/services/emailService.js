@@ -1,42 +1,29 @@
-const sgMail = require('@sendgrid/mail');
 const { db } = require('../firebaseAdmin');
 
-// Initialize SendGrid with API key
-if (process.env.SENDGRID_API_KEY) {
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-  console.log('[Email] SendGrid initialized');
-} else {
-  console.warn('[Email] SENDGRID_API_KEY not set - email sending disabled');
-}
-
 /**
- * Send email notification to a contact
+ * Queue email via Firebase Trigger Email Extension
+ *
+ * This uses Firebase's "Trigger Email" extension which watches
+ * a Firestore collection (default: "mail") and sends emails automatically.
+ *
+ * Setup required:
+ * 1. Install "Trigger Email" extension in Firebase Console
+ * 2. Configure SMTP settings (Gmail, SendGrid, etc.)
+ * 3. Extension will watch "mail" collection and send emails
+ *
  * @param {string} toEmail - Recipient email address
  * @param {object} alertData - Alert information
  * @param {object} fromUserData - User who is overdue
  * @returns {Promise<{success: boolean, messageId?: string, error?: string}>}
  */
 async function sendEmailNotification(toEmail, alertData, fromUserData) {
-  if (!process.env.SENDGRID_API_KEY) {
-    console.log(`[Email] Skipping email to ${toEmail} - SENDGRID_API_KEY not configured`);
-    return {
-      success: false,
-      error: 'SENDGRID_NOT_CONFIGURED',
-    };
-  }
-
-  const fromEmail = process.env.SENDGRID_FROM_EMAIL || 'noreply@alivecheck.app';
-  const fromName = process.env.SENDGRID_FROM_NAME || 'AliveCheck';
   const userName = fromUserData.displayName || fromUserData.email || 'Someone';
 
-  const msg = {
+  const emailData = {
     to: toEmail,
-    from: {
-      email: fromEmail,
-      name: fromName,
-    },
-    subject: `⚠️ AliveCheck Alert: ${userName} may need help`,
-    text: `
+    message: {
+      subject: `⚠️ AliveCheck Alert: ${userName} may need help`,
+      text: `
 AliveCheck Alert
 
 ${userName} has not checked in and may need your help.
@@ -49,8 +36,8 @@ What you can do:
 - Contact emergency services if you're concerned
 
 This is an automated alert from AliveCheck.
-    `.trim(),
-    html: `
+      `.trim(),
+      html: `
 <!DOCTYPE html>
 <html>
 <head>
@@ -86,27 +73,26 @@ This is an automated alert from AliveCheck.
   </div>
 </body>
 </html>
-    `.trim(),
+      `.trim(),
+    },
+    createdAt: new Date().toISOString(),
+    fromUserId: fromUserData.uid || null,
+    fromUserName: userName,
   };
 
   try {
-    console.log(`[Email] Sending alert email to ${toEmail} for user ${userName}`);
-    const response = await sgMail.send(msg);
-    const messageId = response[0]?.headers?.['x-message-id'] || 'sent';
+    console.log(`[Email] Queuing email to ${toEmail} for user ${userName}`);
 
-    console.log(`[Email] Successfully sent to ${toEmail}, messageId: ${messageId}`);
+    // Add to "mail" collection - Firebase Trigger Email extension will pick it up
+    const mailRef = await db.collection('mail').add(emailData);
+
+    console.log(`[Email] Email queued successfully, docId: ${mailRef.id}`);
     return {
       success: true,
-      messageId,
+      messageId: mailRef.id,
     };
   } catch (error) {
-    console.error(`[Email] Error sending to ${toEmail}:`, error.message);
-
-    // Log detailed error for debugging
-    if (error.response) {
-      console.error(`[Email] SendGrid error details:`, error.response.body);
-    }
-
+    console.error(`[Email] Error queuing email to ${toEmail}:`, error.message);
     return {
       success: false,
       error: error.message,

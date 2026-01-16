@@ -33,9 +33,6 @@ Storage Bucket: im-ok-4b2d2.firebasestorage.app
 PORT=3000
 NODE_ENV=production
 FIREBASE_SERVICE_ACCOUNT_B64=<base64-encoded-service-account-json>
-SENDGRID_API_KEY=<your-sendgrid-api-key>
-SENDGRID_FROM_EMAIL=noreply@yourdomain.com
-SENDGRID_FROM_NAME=AliveCheck
 ```
 
 ### How to get FIREBASE_SERVICE_ACCOUNT_B64:
@@ -47,6 +44,24 @@ SENDGRID_FROM_NAME=AliveCheck
    base64 -i serviceAccountKey.json
    ```
 5. Copy the output to Railway Variables
+
+### Firebase Trigger Email Extension (for sending emails)
+Email gửi qua Firebase Extension "Trigger Email". Cách setup:
+
+1. Vào Firebase Console > Extensions > Browse Extensions
+2. Tìm "Trigger Email" và cài đặt
+3. Cấu hình SMTP (có thể dùng Gmail):
+   - SMTP server: `smtp.gmail.com`
+   - SMTP port: `587`
+   - Email: your-gmail@gmail.com
+   - Password: App Password (không phải password gmail thường)
+4. Collection path: `mail` (default)
+
+**Cách tạo Gmail App Password:**
+1. Vào Google Account > Security
+2. Bật 2-Step Verification
+3. App passwords > Create
+4. Copy password và dùng trong Firebase Extension config
 
 ---
 
@@ -496,7 +511,6 @@ railway logs
 ```json
 {
   "dependencies": {
-    "@sendgrid/mail": "^8.x",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
@@ -535,7 +549,7 @@ railway logs
 ## 16. Changelog
 
 ### 2026-01-17
-- Implement SendGrid email integration for escalation step
+- Implement email via Firebase Trigger Email Extension
 - Fix push notification immediate sending on alert creation
 
 ### 2026-01-16
