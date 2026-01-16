@@ -17,7 +17,7 @@
 | **Email (SendGrid)** | ⬜ Planned | TODO in escalation step |
 | **SMS (Twilio)** | ⬜ Planned | TODO in escalation step |
 | **Authentication** | ⬜ Planned | JWT/Firebase Auth verification |
-| **Deployment** | ✅ Live | https://beenotebemd01.up.railway.app |
+| **Deployment** | ✅ Live | https://imokhisoeco-production.up.railway.app |
 
 ---
 
