@@ -11,7 +11,7 @@
 |----------|--------|---------|
 | **Express Server** | ✅ Completed | Health check, CORS, JSON parsing |
 | **Firebase Admin SDK** | ✅ Completed | Firestore + FCM integration |
-| **Scheduled Jobs** | ✅ Completed | checkOverdueUsers, processEscalations |
+| **Scheduled Jobs** | ✅ Completed | External cron via cron-job.org |
 | **Push Notifications** | ✅ Completed | FCM to linked contacts |
 | **Webhooks** | ✅ Completed | checkin, user-created |
 | **Email (SendGrid)** | ⬜ Planned | TODO in escalation step |
@@ -21,10 +21,22 @@
 
 ---
 
+## Quick Links
+
+| Resource | URL |
+|----------|-----|
+| **Production API** | https://imokhisoeco-production.up.railway.app |
+| **Health Check** | https://imokhisoeco-production.up.railway.app/health |
+| **Cron Endpoint** | https://imokhisoeco-production.up.railway.app/api/notifications/cron |
+| **GitHub Repo** | https://github.com/Hailexuan00/im_ok_hisoEco |
+| **Firebase Console** | https://console.firebase.google.com/project/im-ok-4b2d2 |
+
+---
+
 ## 1. CORE IDEA
 
 Backend service chạy trên Railway để:
-1. **Quét users quá hạn** mỗi 5 phút
+1. **Quét users quá hạn** mỗi 5 phút (via external cron)
 2. **Tạo alerts** khi user không check-in đúng hạn
 3. **Gửi thông báo** theo escalation steps (push → email → sms)
 4. **Xử lý webhooks** từ mobile app
@@ -35,13 +47,21 @@ Backend service chạy trên Railway để:
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
+│                    EXTERNAL CRON SERVICE                         │
+│                     (cron-job.org - FREE)                        │
+│              Calls GET /api/notifications/cron                   │
+│                    every 5 minutes                               │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
 │                         RAILWAY                                  │
 │  ┌───────────────────────────────────────────────────────────┐  │
 │  │                    EXPRESS SERVER                          │  │
 │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐       │  │
-│  │  │   Routes    │  │  Services   │  │    Jobs     │       │  │
-│  │  │ /api/*      │  │ notification│  │ scheduler   │       │  │
-│  │  │ /webhooks/* │  │ alert       │  │ cron tasks  │       │  │
+│  │  │   Routes    │  │  Services   │  │  Cron API   │       │  │
+│  │  │ /api/*      │  │ notification│  │ /cron       │       │  │
+│  │  │ /webhooks/* │  │ alert       │  │ (triggered) │       │  │
 │  │  │ /health     │  │ user        │  │             │       │  │
 │  │  └─────────────┘  └─────────────┘  └─────────────┘       │  │
 │  └───────────────────────────────────────────────────────────┘  │
@@ -71,9 +91,55 @@ Backend service chạy trên Railway để:
 
 ---
 
-## 3. FEATURES - Implementation Status
+## 3. EXTERNAL CRON SETUP (QUAN TRỌNG!)
 
-### 3.1 Express Server ✅ COMPLETED
+### Tại sao cần External Cron?
+Railway free tier không hỗ trợ background cron jobs khi server "ngủ". Giải pháp: dùng dịch vụ cron bên ngoài (miễn phí) để gọi API định kỳ.
+
+### Cron Endpoint
+```
+GET https://imokhisoeco-production.up.railway.app/api/notifications/cron
+```
+
+### Response
+```json
+{
+  "ok": true,
+  "message": "Cron job completed",
+  "overdueCount": 0,
+  "alertsCreated": 0,
+  "durationMs": 123,
+  "timestamp": "2026-01-16T10:00:00.000Z"
+}
+```
+
+### Setup cron-job.org (Miễn phí - Khuyến nghị)
+
+1. **Đăng ký**: https://cron-job.org (miễn phí)
+
+2. **Tạo Cron Job**:
+   - **Title**: AliveCheck Overdue Check
+   - **URL**: `https://imokhisoeco-production.up.railway.app/api/notifications/cron`
+   - **Schedule**: Every 5 minutes
+   - **Request Method**: GET
+   - **Timeout**: 30 seconds
+
+3. **Enable và Save**
+
+### Các dịch vụ cron miễn phí khác
+
+| Dịch vụ | Miễn phí | Tần suất tối thiểu | URL |
+|---------|----------|-------------------|-----|
+| **cron-job.org** | ✅ Unlimited | 1 phút | https://cron-job.org |
+| **UptimeRobot** | ✅ 50 monitors | 5 phút | https://uptimerobot.com |
+| **Easycron** | ✅ 200/tháng | 1 phút | https://easycron.com |
+| **Cronhub** | ✅ 1 job | 1 phút | https://cronhub.io |
+
+---
+
+## 4. FEATURES - Implementation Status
+
+### 4.1 Express Server ✅ COMPLETED
 - [x] Express 5.x setup
 - [x] CORS enabled
 - [x] JSON body parsing
@@ -83,7 +149,7 @@ Backend service chạy trên Railway để:
 
 **File:** `src/index.js`
 
-### 3.2 Firebase Integration ✅ COMPLETED
+### 4.2 Firebase Integration ✅ COMPLETED
 - [x] Firebase Admin SDK initialization
 - [x] Service account from Base64 env var
 - [x] Firestore database access
@@ -91,14 +157,17 @@ Backend service chạy trên Railway để:
 
 **File:** `src/firebaseAdmin.js`
 
-### 3.3 Scheduled Jobs ✅ COMPLETED
-- [x] node-cron integration
-- [x] checkOverdueUsers (every 5 min)
-- [x] processEscalations (every 1 min)
+### 4.3 Scheduled Jobs ✅ COMPLETED
+- [x] External cron endpoint (`GET /api/notifications/cron`)
+- [x] checkOverdueUsers function
+- [x] processEscalations function
+- [x] Internal node-cron (backup)
 
-**File:** `src/jobs/scheduler.js`
+**Files:**
+- `src/routes/notification.routes.js` (cron endpoint)
+- `src/jobs/scheduler.js` (internal cron)
 
-### 3.4 Notification Service ✅ COMPLETED
+### 4.4 Notification Service ✅ COMPLETED
 - [x] Send single FCM notification
 - [x] Send to all linked contacts
 - [x] Send reminder to user
@@ -108,18 +177,18 @@ Backend service chạy trên Railway để:
 
 **File:** `src/services/notificationService.js`
 
-### 3.5 Alert Service ✅ COMPLETED
+### 4.5 Alert Service ✅ COMPLETED
 - [x] Create alert with escalation steps
 - [x] Process escalation steps
 - [x] Execute push step
 - [x] Cancel pending alerts
 - [x] Step result tracking
-- [ ] Execute email step (SendGrid)
-- [ ] Execute SMS step (Twilio)
+- [ ] Execute email step (SendGrid) - TODO
+- [ ] Execute SMS step (Twilio) - TODO
 
 **File:** `src/services/alertService.js`
 
-### 3.6 User Service ✅ COMPLETED
+### 4.6 User Service ✅ COMPLETED
 - [x] Check overdue users
 - [x] Update user status
 - [x] Initialize user defaults
@@ -127,8 +196,8 @@ Backend service chạy trên Railway để:
 
 **File:** `src/services/userService.js`
 
-### 3.7 API Routes ✅ COMPLETED
-- [x] Notification routes
+### 4.7 API Routes ✅ COMPLETED
+- [x] Notification routes (including cron endpoint)
 - [x] Webhook routes
 - [x] User routes (demo)
 
@@ -136,9 +205,9 @@ Backend service chạy trên Railway để:
 
 ---
 
-## 4. API SPECIFICATION
+## 5. API SPECIFICATION
 
-### 4.1 Health & Status
+### 5.1 Health & Status
 
 ```
 GET /
@@ -148,7 +217,21 @@ GET /health
 Response: { ok: true, timestamp: "2026-01-16T..." }
 ```
 
-### 4.2 Notification Endpoints
+### 5.2 Cron Endpoint (External Cron Service)
+
+```
+GET /api/notifications/cron
+Response: {
+  ok: true,
+  message: "Cron job completed",
+  overdueCount: number,
+  alertsCreated: number,
+  durationMs: number,
+  timestamp: "2026-01-16T..."
+}
+```
+
+### 5.3 Notification Endpoints
 
 ```
 POST /api/notifications/test
@@ -156,7 +239,7 @@ Body: { fromUserId: string }
 Response: {
   ok: true,
   message: "Test notifications sent",
-  results: [{ contactId, status, messageId?, error? }]
+  results: [{ contactId, linkedUid, status, messageId?, error? }]
 }
 
 POST /api/notifications/send
@@ -170,7 +253,7 @@ POST /api/notifications/trigger-escalations
 Response: { ok: true, message: "Escalation processing completed" }
 ```
 
-### 4.3 Webhook Endpoints
+### 5.4 Webhook Endpoints
 
 ```
 POST /api/webhooks/checkin
@@ -188,27 +271,28 @@ Response: { ok: true, updates: { checkinPolicy, status } }
 
 ---
 
-## 5. ESCALATION CONFIGURATION
+## 6. ESCALATION CONFIGURATION
 
 ### Default Escalation Steps
 ```javascript
 escalation: {
   steps: [
     { type: "push", delayMinutes: 0 },    // Immediate
-    { type: "email", delayMinutes: 30 },  // After 30 min
-    { type: "sms", delayMinutes: 60 }     // After 1 hour
+    { type: "email", delayMinutes: 30 },  // After 30 min (TODO)
+    { type: "sms", delayMinutes: 60 }     // After 1 hour (TODO)
   ]
 }
 ```
 
 ### Step Execution Flow
 1. **Alert Created** → currentStepIndex: 0
-2. **processEscalations runs** (every 1 min)
-3. **Check delay time** → Is `now >= alertCreatedAt + delayMinutes`?
-4. **Execute step** → Send notification based on type
-5. **Update stepResults** → Record status, sentAt, error
-6. **Increment currentStepIndex**
-7. **Repeat until all steps done**
+2. **Cron triggers /api/notifications/cron**
+3. **processEscalations runs**
+4. **Check delay time** → Is `now >= alertCreatedAt + delayMinutes`?
+5. **Execute step** → Send notification based on type
+6. **Update stepResults** → Record status, sentAt, error
+7. **Increment currentStepIndex**
+8. **Repeat until all steps done**
 
 ### Step Status Values
 - `pending` - Not yet executed
@@ -217,7 +301,7 @@ escalation: {
 
 ---
 
-## 6. MOBILE APP INTEGRATION
+## 7. MOBILE APP INTEGRATION
 
 ### Required Actions from Mobile App:
 
@@ -233,7 +317,7 @@ escalation: {
 2. **Call Webhook on Check-in** (optional)
    ```javascript
    // POST /api/webhooks/checkin
-   // OR write directly to Firestore and let backend detect via scheduled job
+   // OR write directly to Firestore and let backend detect via cron
    ```
 
 3. **Handle Incoming Notifications**
@@ -248,14 +332,14 @@ escalation: {
 
 ### Backend Provides:
 
-1. **Automatic overdue detection** (every 5 min)
+1. **Automatic overdue detection** (via external cron every 5 min)
 2. **Alert creation** with escalation steps
 3. **Push notifications** to linked contacts
 4. **Token cleanup** for invalid FCM tokens
 
 ---
 
-## 7. ENVIRONMENT VARIABLES
+## 8. ENVIRONMENT VARIABLES
 
 ### Required
 ```bash
@@ -282,7 +366,7 @@ TWILIO_PHONE_NUMBER=
 
 ---
 
-## 8. DEPLOYMENT (Railway)
+## 9. DEPLOYMENT (Railway)
 
 ### Steps to Deploy:
 
@@ -303,22 +387,22 @@ TWILIO_PHONE_NUMBER=
    - Go to Settings → Domains
    - Generate Railway domain or add custom domain
 
+5. **Setup External Cron** (QUAN TRỌNG!)
+   - Go to https://cron-job.org
+   - Create cron job calling `GET /api/notifications/cron`
+   - Set interval: every 5 minutes
+
 ### Health Check
 ```bash
-curl https://your-domain.railway.app/health
+curl https://imokhisoeco-production.up.railway.app/health
 # Expected: { "ok": true, "timestamp": "..." }
 ```
 
----
-
-## 9. CRON SCHEDULE REFERENCE
-
-| Schedule | Cron Expression | Description |
-|----------|-----------------|-------------|
-| Every minute | `* * * * *` | processEscalations |
-| Every 5 minutes | `*/5 * * * *` | checkOverdueUsers |
-| Every hour | `0 * * * *` | (not used) |
-| Every day at 9am | `0 9 * * *` | (not used) |
+### Test Cron Manually
+```bash
+curl https://imokhisoeco-production.up.railway.app/api/notifications/cron
+# Expected: { "ok": true, "message": "Cron job completed", ... }
+```
 
 ---
 
@@ -349,7 +433,8 @@ curl https://your-domain.railway.app/health
 
 ### Log Prefixes
 ```
-[Scheduler]   - Scheduled job events
+[CRON]        - External cron job events
+[Scheduler]   - Internal scheduled job events
 [FCM]         - Firebase Cloud Messaging
 [Alert]       - Alert creation/updates
 [Escalation]  - Escalation processing
@@ -361,13 +446,11 @@ curl https://your-domain.railway.app/health
 
 ### Example Logs
 ```
-[Scheduler] Running checkOverdueUsers job
+[CRON] External cron triggered at 2026-01-16T10:00:00.000Z
 [OverdueCheck] Starting check at 2026-01-16T10:00:00.000Z
 [OverdueCheck] User abc123 is now overdue
 [Alert] Created alert xyz789 for user abc123
 [OverdueCheck] Completed. Found 1 overdue users, created 1 alerts
-
-[Scheduler] Running processEscalations job
 [Escalation] Processing step 0 (push) for alert xyz789
 [FCM] Successfully sent message: projects/im-ok-4b2d2/messages/123
 [Escalation] Step 0 completed with status: sent
@@ -378,23 +461,24 @@ curl https://your-domain.railway.app/health
 ## 12. TESTING CHECKLIST
 
 ### Before Going Live:
-- [ ] Health check returns OK
-- [ ] Can read/write to Firestore
-- [ ] FCM token is valid
-- [ ] Push notification received on device
-- [ ] Overdue detection works
+- [x] Health check returns OK
+- [x] Can read/write to Firestore
+- [x] FCM token is valid
+- [x] Push notification received on device
+- [ ] External cron setup on cron-job.org
+- [ ] Overdue detection works (via cron)
 - [ ] Alert is created
 - [ ] Escalation steps execute
 - [ ] Check-in cancels alerts
 
 ### Manual Test Flow:
-1. Create test user in Firestore
-2. Set `nextDueAt` to past time
-3. Trigger `/api/notifications/trigger-overdue-check`
-4. Check alert created in `users/{uid}/alerts`
-5. Trigger `/api/notifications/trigger-escalations`
+1. Setup external cron on cron-job.org
+2. Create test user in Firestore
+3. Set `nextDueAt` to past time
+4. Wait for cron OR call `GET /api/notifications/cron`
+5. Check alert created in `users/{uid}/alerts`
 6. Verify push received on linked contact's device
-7. Call `/api/webhooks/checkin`
+7. Call `POST /api/webhooks/checkin`
 8. Verify alert cancelled
 
 ---
@@ -417,8 +501,8 @@ curl https://your-domain.railway.app/health
 ## 14. SCALING CONSIDERATIONS
 
 ### Current Architecture:
-- Single instance on Railway
-- In-memory cron jobs
+- Single instance on Railway (free tier)
+- External cron service for scheduling
 - Firestore handles data scaling
 
 ### For 10,000+ Users:
@@ -426,16 +510,17 @@ curl https://your-domain.railway.app/health
 - Use **Cloud Tasks** for delayed jobs
 - Implement **batch processing** for notifications
 - Add **caching** for frequently accessed data
+- Upgrade Railway plan for always-on instance
 
 ---
 
 ## 15. NEXT STEPS
 
-### Phase 1: Core (Current) ✅
+### Phase 1: Core ✅ COMPLETED
 - [x] Express server
 - [x] Firebase integration
 - [x] Push notifications
-- [x] Scheduled jobs
+- [x] External cron endpoint
 
 ### Phase 2: Communication
 - [ ] SendGrid email integration
@@ -471,10 +556,16 @@ curl https://your-domain.railway.app/health
 
 ## 17. CHANGELOG
 
-### 2026-01-16 (Initial Release)
+### 2026-01-16 (v1.1)
+- Added external cron endpoint `GET /api/notifications/cron`
+- Updated architecture to use external cron service (cron-job.org)
+- Works around Railway free tier cron limitations
+- Updated documentation
+
+### 2026-01-16 (v1.0 - Initial Release)
 - Project setup with Express.js 5.x
 - Firebase Admin SDK integration
-- Scheduled jobs with node-cron
+- Internal scheduled jobs with node-cron
 - Push notification service
 - Alert and escalation system
 - Webhook endpoints for mobile integration
