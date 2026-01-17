@@ -185,4 +185,107 @@ router.post('/trigger-escalations', async (req, res) => {
   }
 });
 
+/**
+ * POST /api/notifications/migrate-users
+ * ONE-TIME migration to add root-level fields for optimized queries
+ * This adds isPaused and overdueCutoff fields to all existing users
+ */
+router.post('/migrate-users', async (req, res) => {
+  console.log('[Migration] Starting migration via API...');
+  const startTime = Date.now();
+  const admin = require('firebase-admin');
+
+  let migratedCount = 0;
+  let skippedCount = 0;
+  let errorCount = 0;
+
+  try {
+    const usersSnapshot = await db.collection('users').get();
+    console.log(`[Migration] Found ${usersSnapshot.size} users to process`);
+
+    // Process in batches of 500 (Firestore batch limit)
+    const BATCH_SIZE = 500;
+    let batch = db.batch();
+    let batchCount = 0;
+
+    for (const userDoc of usersSnapshot.docs) {
+      const userId = userDoc.id;
+      const userData = userDoc.data();
+
+      try {
+        const policy = userData.checkinPolicy || {};
+        const status = userData.status || {};
+
+        // Get values with defaults
+        const isPaused = policy.isPaused || false;
+        const intervalHours = policy.intervalHours || 24;
+        const graceMinutes = policy.graceMinutes || 60;
+
+        // Calculate overdueCutoff
+        let overdueCutoff;
+        if (status.nextDueAt) {
+          const nextDueAt = status.nextDueAt.toDate ? status.nextDueAt.toDate() : new Date(status.nextDueAt);
+          overdueCutoff = new Date(nextDueAt.getTime() + graceMinutes * 60 * 1000);
+        } else {
+          // No nextDueAt, set overdueCutoff far in the future
+          const now = new Date();
+          const nextDueAt = new Date(now.getTime() + intervalHours * 60 * 60 * 1000);
+          overdueCutoff = new Date(nextDueAt.getTime() + graceMinutes * 60 * 1000);
+        }
+
+        // Check if already has the fields with correct values
+        if (userData.isPaused !== undefined && userData.overdueCutoff) {
+          skippedCount++;
+          continue;
+        }
+
+        // Add to batch
+        batch.update(userDoc.ref, {
+          isPaused: isPaused,
+          overdueCutoff: admin.firestore.Timestamp.fromDate(overdueCutoff),
+        });
+
+        batchCount++;
+        migratedCount++;
+
+        // Commit batch if full
+        if (batchCount >= BATCH_SIZE) {
+          await batch.commit();
+          console.log(`[Migration] Committed batch of ${batchCount} users`);
+          batch = db.batch();
+          batchCount = 0;
+        }
+
+      } catch (error) {
+        console.error(`[Migration] Error processing user ${userId}:`, error.message);
+        errorCount++;
+      }
+    }
+
+    // Commit remaining batch
+    if (batchCount > 0) {
+      await batch.commit();
+      console.log(`[Migration] Committed final batch of ${batchCount} users`);
+    }
+
+    const duration = Date.now() - startTime;
+    console.log(`[Migration] Completed in ${duration}ms. Migrated: ${migratedCount}, Skipped: ${skippedCount}, Errors: ${errorCount}`);
+
+    res.json({
+      ok: true,
+      message: 'Migration completed',
+      migratedCount,
+      skippedCount,
+      errorCount,
+      durationMs: duration,
+    });
+  } catch (error) {
+    console.error('[Migration] Fatal error:', error);
+    res.status(500).json({
+      ok: false,
+      error: error.message,
+    });
+  }
+});
+
 module.exports = router;
