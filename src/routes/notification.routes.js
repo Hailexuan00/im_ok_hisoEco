@@ -140,6 +140,7 @@ router.get('/cron', async (req, res) => {
       ok: true,
       message: 'Cron job completed',
       overdue: {
+        queryMode: overdueResult.queryMode || 'unknown',
         count: overdueResult.overdueCount,
         alertsCreated: overdueResult.alertsCreated,
         skipped: overdueResult.skippedCount,

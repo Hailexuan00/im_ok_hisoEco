@@ -7,7 +7,7 @@ const REMINDER_INTERVAL_MINUTES = 30;
 
 /**
  * Check users for overdue status and create alerts
- * OPTIMIZED V2: Query only users who are potentially overdue using root-level fields
+ * OPTIMIZED V3: Try optimized query first, fallback to full scan if index not ready
  */
 async function checkOverdueUsers() {
   const now = new Date();
@@ -18,29 +18,64 @@ async function checkOverdueUsers() {
   let overdueCount = 0;
   let alertsCreated = 0;
   let skippedCount = 0;
+  let queryMode = 'optimized';
 
   try {
-    // OPTIMIZATION: Query only users who are:
-    // 1. Not paused (isPaused == false)
-    // 2. Have overdueCutoff in the past (meaning they're past grace period)
-    //
-    // overdueCutoff = nextDueAt + graceMinutes
-    // We query where overdueCutoff < now
+    let usersSnapshot;
 
-    const usersSnapshot = await db.collection('users')
-      .where('isPaused', '==', false)
-      .where('overdueCutoff', '<', admin.firestore.Timestamp.fromDate(now))
-      .get();
+    // Try optimized query first (requires composite index + migrated users)
+    try {
+      usersSnapshot = await db.collection('users')
+        .where('isPaused', '==', false)
+        .where('overdueCutoff', '<', admin.firestore.Timestamp.fromDate(now))
+        .get();
+
+      console.log(`[OverdueCheck] Optimized query returned ${usersSnapshot.size} users`);
+    } catch (indexError) {
+      // Fallback to full scan if index not ready or fields missing
+      console.log(`[OverdueCheck] Optimized query failed (${indexError.code || indexError.message}), using fallback`);
+      queryMode = 'fallback';
+
+      // Fallback: Query all users and filter in memory
+      usersSnapshot = await db.collection('users').get();
+      console.log(`[OverdueCheck] Fallback: Loaded ${usersSnapshot.size} users`);
+    }
 
     readCount += usersSnapshot.size;
-    console.log(`[OverdueCheck] Queried ${usersSnapshot.size} potentially overdue users (optimized query)`);
+    console.log(`[OverdueCheck] Query mode: ${queryMode}, Users fetched: ${usersSnapshot.size}`);
 
-    // Process overdue users
+    // Process users - filter in memory if using fallback mode
     const potentiallyOverdueUsers = [];
 
     for (const userDoc of usersSnapshot.docs) {
       const userData = userDoc.data();
       const status = userData.status || {};
+      const policy = userData.checkinPolicy || {};
+
+      // In fallback mode, we need to filter manually
+      if (queryMode === 'fallback') {
+        // Skip if paused
+        if (policy.isPaused === true) {
+          skippedCount++;
+          continue;
+        }
+
+        // Skip if no nextDueAt
+        if (!status.nextDueAt) {
+          skippedCount++;
+          continue;
+        }
+
+        // Check if overdue (past grace period)
+        const nextDueAt = status.nextDueAt.toDate ? status.nextDueAt.toDate() : new Date(status.nextDueAt);
+        const graceMinutes = policy.graceMinutes || 60;
+        const gracePeriodEnd = new Date(nextDueAt.getTime() + graceMinutes * 60 * 1000);
+
+        if (now <= gracePeriodEnd) {
+          skippedCount++;
+          continue; // Not overdue yet
+        }
+      }
 
       // Convert lastAlertAt from Firestore Timestamp if needed
       let lastAlertAt = null;
@@ -56,7 +91,7 @@ async function checkOverdueUsers() {
       });
     }
 
-    console.log(`[OverdueCheck] Found ${potentiallyOverdueUsers.length} potentially overdue users`);
+    console.log(`[OverdueCheck] Found ${potentiallyOverdueUsers.length} potentially overdue users (mode: ${queryMode})`);
 
     // Process overdue users
     for (const { userId, userData, wasAlreadyOverdue, lastAlertAt } of potentiallyOverdueUsers) {
@@ -103,9 +138,10 @@ async function checkOverdueUsers() {
     }
 
     const duration = Date.now() - startTime;
-    console.log(`[OverdueCheck] Completed in ${duration}ms. Reads: ${readCount}, Overdue: ${overdueCount}, Alerts: ${alertsCreated}, Skipped: ${skippedCount}`);
+    console.log(`[OverdueCheck] Completed in ${duration}ms. Mode: ${queryMode}, Reads: ${readCount}, Overdue: ${overdueCount}, Alerts: ${alertsCreated}, Skipped: ${skippedCount}`);
 
     return {
+      queryMode,
       overdueCount,
       alertsCreated,
       skippedCount,
