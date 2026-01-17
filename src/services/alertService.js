@@ -291,36 +291,78 @@ async function processAlertEscalation(userId, userData, alertId, alert) {
 
 /**
  * Process escalation steps for pending alerts
+ * OPTIMIZED: Use collectionGroup query to get all pending alerts at once
  */
 async function processEscalations() {
   const now = new Date();
+  const startTime = Date.now();
   console.log(`[Escalation] Starting escalation processing at ${now.toISOString()}`);
 
-  try {
-    // Get all users
-    const usersSnapshot = await db.collection('users').get();
+  let readCount = 0;
+  let processedCount = 0;
+  let skippedCount = 0;
 
-    for (const userDoc of usersSnapshot.docs) {
-      const userId = userDoc.id;
+  try {
+    // OPTIMIZATION: Use collectionGroup to query all pending alerts across all users
+    // This is 1 query instead of N queries (one per user)
+    const pendingAlertsSnapshot = await db
+      .collectionGroup('alerts')
+      .where('status', '==', 'pending')
+      .get();
+
+    readCount += pendingAlertsSnapshot.size;
+    console.log(`[Escalation] Found ${pendingAlertsSnapshot.size} pending alerts`);
+
+    if (pendingAlertsSnapshot.empty) {
+      console.log(`[Escalation] No pending alerts to process`);
+      return { processedCount: 0, skippedCount: 0, readCount, durationMs: Date.now() - startTime };
+    }
+
+    // Group alerts by userId to batch user data fetches
+    const alertsByUser = new Map();
+    for (const alertDoc of pendingAlertsSnapshot.docs) {
+      // Extract userId from path: users/{userId}/alerts/{alertId}
+      const pathParts = alertDoc.ref.path.split('/');
+      const userId = pathParts[1];
+
+      if (!alertsByUser.has(userId)) {
+        alertsByUser.set(userId, []);
+      }
+      alertsByUser.get(userId).push({
+        alertId: alertDoc.id,
+        alert: alertDoc.data(),
+      });
+    }
+
+    console.log(`[Escalation] Processing alerts for ${alertsByUser.size} users`);
+
+    // Process each user's alerts
+    for (const [userId, alerts] of alertsByUser) {
+      // Fetch user data once per user (not per alert)
+      const userDoc = await db.collection('users').doc(userId).get();
+      readCount++;
+
+      if (!userDoc.exists) {
+        console.log(`[Escalation] User ${userId} not found, skipping ${alerts.length} alerts`);
+        skippedCount += alerts.length;
+        continue;
+      }
+
       const userData = userDoc.data();
 
-      // Get pending alerts for this user
-      const alertsSnapshot = await db
-        .collection('users')
-        .doc(userId)
-        .collection('alerts')
-        .where('status', '==', 'pending')
-        .get();
-
-      for (const alertDoc of alertsSnapshot.docs) {
-        const alert = alertDoc.data();
-        await processAlertEscalation(userId, userData, alertDoc.id, alert);
+      for (const { alertId, alert } of alerts) {
+        await processAlertEscalation(userId, userData, alertId, alert);
+        processedCount++;
       }
     }
 
-    console.log(`[Escalation] Completed escalation processing`);
+    const duration = Date.now() - startTime;
+    console.log(`[Escalation] Completed in ${duration}ms. Reads: ${readCount}, Processed: ${processedCount}, Skipped: ${skippedCount}`);
+
+    return { processedCount, skippedCount, readCount, durationMs: duration };
   } catch (error) {
     console.error(`[Escalation] Error:`, error);
+    throw error;
   }
 }
 

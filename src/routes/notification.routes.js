@@ -118,6 +118,7 @@ router.post('/trigger-overdue-check', async (req, res) => {
  * GET /api/notifications/cron
  * Endpoint for external cron services (cron-job.org, UptimeRobot, etc.)
  * Runs both overdue check and escalation processing
+ * OPTIMIZED: Reduced Firestore reads significantly
  */
 router.get('/cron', async (req, res) => {
   const startTime = Date.now();
@@ -128,16 +129,31 @@ router.get('/cron', async (req, res) => {
     const overdueResult = await checkOverdueUsers();
 
     // Run escalation processing
-    await processEscalations();
+    const escalationResult = await processEscalations();
 
-    const duration = Date.now() - startTime;
+    const totalDuration = Date.now() - startTime;
+    const totalReads = (overdueResult.readCount || 0) + (escalationResult?.readCount || 0);
+
+    console.log(`[CRON] Completed in ${totalDuration}ms. Total reads: ${totalReads}`);
 
     res.json({
       ok: true,
       message: 'Cron job completed',
-      overdueCount: overdueResult.overdueCount,
-      alertsCreated: overdueResult.alertsCreated,
-      durationMs: duration,
+      overdue: {
+        count: overdueResult.overdueCount,
+        alertsCreated: overdueResult.alertsCreated,
+        skipped: overdueResult.skippedCount,
+        reads: overdueResult.readCount,
+        durationMs: overdueResult.durationMs,
+      },
+      escalation: {
+        processed: escalationResult?.processedCount || 0,
+        skipped: escalationResult?.skippedCount || 0,
+        reads: escalationResult?.readCount || 0,
+        durationMs: escalationResult?.durationMs || 0,
+      },
+      totalReads,
+      totalDurationMs: totalDuration,
       timestamp: new Date().toISOString(),
     });
   } catch (error) {
