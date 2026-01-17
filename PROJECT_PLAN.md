@@ -1,7 +1,7 @@
-# AliveCheck Backend - Project Plan
+# Im Ok Backend - Project Plan
 > **Target Scale: 10,000+ users** | **Core Feature: Auto Alert System**
 > **Stack: Node.js + Express + Firebase Admin SDK + Railway**
-> **Last Updated: 2026-01-16**
+> **Last Updated: 2026-01-17**
 
 ---
 
@@ -11,11 +11,13 @@
 |----------|--------|---------|
 | **Express Server** | ✅ Completed | Health check, CORS, JSON parsing |
 | **Firebase Admin SDK** | ✅ Completed | Firestore + FCM integration |
-| **Scheduled Jobs** | ✅ Completed | External cron via cron-job.org |
-| **Push Notifications** | ✅ Completed | FCM to linked contacts |
+| **Scheduled Jobs** | ✅ Completed | External cron + node-cron |
+| **Push Notifications** | ✅ Completed | FCM with multi-language (VI/EN) |
 | **Webhooks** | ✅ Completed | checkin, user-created |
-| **Email (SendGrid)** | ⬜ Planned | TODO in escalation step |
+| **Email (Nodemailer)** | ✅ Completed | Gmail SMTP (500/day free) |
 | **SMS (Twilio)** | ⬜ Planned | TODO in escalation step |
+| **Firestore Optimization** | ✅ Completed | Query optimization, batch fetch |
+| **Multi-language** | ✅ Completed | Vietnamese & English |
 | **Authentication** | ⬜ Planned | JWT/Firebase Auth verification |
 | **Deployment** | ✅ Live | https://imokhisoeco-production.up.railway.app |
 
@@ -350,19 +352,104 @@ PORT=3000
 FIREBASE_SERVICE_ACCOUNT_B64=<base64-encoded-json>
 ```
 
+### Email (Nodemailer + Gmail SMTP)
+```bash
+GMAIL_USER=your-email@gmail.com
+GMAIL_APP_PASSWORD=xxxx-xxxx-xxxx-xxxx
+```
+
 ### Optional (for future features)
 ```bash
 NODE_ENV=production
-
-# SendGrid (email)
-SENDGRID_API_KEY=
-SENDGRID_FROM_EMAIL=
 
 # Twilio (SMS)
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_PHONE_NUMBER=
 ```
+
+---
+
+## 8.1 FIRESTORE OPTIMIZATION
+
+### Problem
+Firestore Spark plan: **50K reads/day, 20K writes/day**
+- Original code: Full user scan every cron → quota exhausted
+
+### Solutions Implemented
+
+| Optimization | Before | After | Reduction |
+|--------------|--------|-------|-----------|
+| Overdue query | `db.collection('users').get()` | `where('isPaused').where('overdueCutoff')` | ~90% |
+| Linked users | N queries in loop | `db.getAll(...refs)` batch | ~95% |
+| Alert queries | Query per user | `collectionGroup('alerts')` | ~90% |
+| Reminder check | Query alerts subcollection | `lastAlertAt` field | 100% |
+
+### Root-level Fields (Required)
+```javascript
+// Added to user document:
+{
+  isPaused: boolean,        // Duplicate of checkinPolicy.isPaused
+  overdueCutoff: Timestamp  // nextDueAt + graceMinutes
+}
+```
+
+### Composite Index (firestore.indexes.json)
+```json
+{
+  "indexes": [
+    {
+      "collectionGroup": "users",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "isPaused", "order": "ASCENDING" },
+        { "fieldPath": "overdueCutoff", "order": "ASCENDING" }
+      ]
+    }
+  ]
+}
+```
+
+### Migration Steps (One-time)
+```bash
+# 1. Deploy indexes
+firebase deploy --only firestore:indexes
+
+# 2. Run migration
+curl -X POST https://your-url/api/notifications/migrate-users
+
+# 3. Verify (queryMode should be "optimized")
+curl https://your-url/api/notifications/cron
+```
+
+### Estimated Reads per Cron
+
+| Users | Fallback | Optimized |
+|-------|----------|-----------|
+| 10 | 10 reads | 2 reads |
+| 100 | 100 reads | 5 reads |
+| 1000 | 1000 reads | 10 reads |
+
+---
+
+## 8.2 MULTI-LANGUAGE NOTIFICATIONS
+
+### Supported: `en` (English), `vi` (Vietnamese)
+
+```javascript
+const NOTIFICATION_MESSAGES = {
+  en: {
+    alertTitle: 'Emergency Alert',
+    alertBody: (name) => `${name} has not checked in and may need help!`,
+  },
+  vi: {
+    alertTitle: 'Cảnh báo khẩn cấp',
+    alertBody: (name) => `${name} chưa check-in và có thể cần trợ giúp!`,
+  },
+};
+```
+
+Language is determined by: `user.language` → `user.settings.language` → `"en"`
 
 ---
 
@@ -522,17 +609,25 @@ curl https://imokhisoeco-production.up.railway.app/api/notifications/cron
 - [x] Push notifications
 - [x] External cron endpoint
 
-### Phase 2: Communication
-- [ ] SendGrid email integration
-- [ ] Twilio SMS integration
-- [ ] Message templates
+### Phase 2: Communication ✅ COMPLETED
+- [x] Email integration (Nodemailer + Gmail)
+- [x] Multi-language (VI/EN)
+- [x] 30-minute reminder interval
+- [ ] Twilio SMS (TODO)
 
-### Phase 3: Security
+### Phase 3: Optimization ✅ COMPLETED
+- [x] Firestore query optimization
+- [x] Batch fetch linked users
+- [x] CollectionGroup for alerts
+- [x] Root-level fields
+- [x] Migration endpoint
+
+### Phase 4: Security
 - [ ] JWT authentication
 - [ ] Rate limiting
 - [ ] Request logging
 
-### Phase 4: Monitoring
+### Phase 5: Monitoring
 - [ ] Error tracking (Sentry)
 - [ ] Performance monitoring
 - [ ] Analytics dashboard
@@ -556,6 +651,20 @@ curl https://imokhisoeco-production.up.railway.app/api/notifications/cron
 
 ## 17. CHANGELOG
 
+### 2026-01-17 (v2.0 - Major Optimization)
+- **Firestore Optimization**:
+  - Query only overdue users (not full scan)
+  - Batch fetch with `db.getAll()`
+  - CollectionGroup query for alerts
+  - Fallback mode when index not ready
+- **Root-level Fields**: `isPaused`, `overdueCutoff`
+- **Migration Endpoint**: `POST /api/notifications/migrate-users`
+- **Composite Indexes**: `firestore.indexes.json`
+- **Multi-language**: VI/EN notifications
+- **30-minute Reminder**: Repeated alerts if still overdue
+- **Email Service**: Nodemailer + Gmail SMTP
+- **Query Mode Tracking**: `queryMode: "optimized"` or `"fallback"`
+
 ### 2026-01-16 (v1.1)
 - Added external cron endpoint `GET /api/notifications/cron`
 - Updated architecture to use external cron service (cron-job.org)
@@ -570,3 +679,30 @@ curl https://imokhisoeco-production.up.railway.app/api/notifications/cron
 - Alert and escalation system
 - Webhook endpoints for mobile integration
 - Documentation (DEBUG.md, PROJECT_PLAN.md)
+
+---
+
+## 18. QUICK COMMANDS
+
+```bash
+# Health check
+curl https://imokhisoeco-production.up.railway.app/health
+
+# Trigger cron
+curl https://imokhisoeco-production.up.railway.app/api/notifications/cron
+
+# Run migration (one-time)
+curl -X POST https://imokhisoeco-production.up.railway.app/api/notifications/migrate-users
+
+# Deploy Firestore indexes
+firebase deploy --only firestore:indexes
+```
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| `RESOURCE_EXHAUSTED` | Run migration + deploy indexes |
+| `queryMode: fallback` | Deploy indexes, run migration |
+| No notifications | Check fcmToken field |
+| Wrong language | Set user.language to "vi" or "en" |
