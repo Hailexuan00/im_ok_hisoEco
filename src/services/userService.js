@@ -20,18 +20,12 @@ async function checkOverdueUsers() {
   let skippedCount = 0;
 
   try {
-    // OPTIMIZATION 1: Only query users where:
-    // - checkinPolicy.isPaused != true (not paused)
-    // - status.nextDueAt exists and is in the past
-    // This dramatically reduces reads vs scanning ALL users
-
-    const usersSnapshot = await db
-      .collection('users')
-      .where('checkinPolicy.isPaused', '!=', true)
-      .get();
+    // Get all users - Firestore != query excludes docs without the field
+    // So we query all and filter in memory (still optimized by removing N+1 alerts queries)
+    const usersSnapshot = await db.collection('users').get();
 
     readCount += usersSnapshot.size;
-    console.log(`[OverdueCheck] Queried ${usersSnapshot.size} active users`);
+    console.log(`[OverdueCheck] Queried ${usersSnapshot.size} users`);
 
     // Filter in memory for overdue users (cheaper than multiple Firestore queries)
     const potentiallyOverdueUsers = [];
@@ -40,6 +34,12 @@ async function checkOverdueUsers() {
       const userData = userDoc.data();
       const status = userData.status || {};
       const policy = userData.checkinPolicy || {};
+
+      // Skip if paused
+      if (policy.isPaused === true) {
+        skippedCount++;
+        continue;
+      }
 
       // Skip if no nextDueAt
       if (!status.nextDueAt) {
@@ -53,11 +53,17 @@ async function checkOverdueUsers() {
 
       // Check if user is overdue (past grace period)
       if (now > gracePeriodEnd) {
+        // Convert lastAlertAt from Firestore Timestamp if needed
+        let lastAlertAt = null;
+        if (status.lastAlertAt) {
+          lastAlertAt = status.lastAlertAt.toDate ? status.lastAlertAt.toDate() : new Date(status.lastAlertAt);
+        }
+
         potentiallyOverdueUsers.push({
           userId: userDoc.id,
           userData,
           wasAlreadyOverdue: status.isOverdue === true,
-          lastAlertAt: status.lastAlertAt ? new Date(status.lastAlertAt) : null,
+          lastAlertAt,
         });
       } else if (status.isOverdue) {
         // User was overdue but now within grace period - reset flag
