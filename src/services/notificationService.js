@@ -88,6 +88,7 @@ async function sendPushNotification(fcmToken, notification, data = {}) {
 
 /**
  * Send push notifications to all linked contacts of a user
+ * OPTIMIZED: Batch fetch all linked users in ONE query instead of N queries
  * @param {string} userId - The overdue user's ID
  * @param {object} userData - The overdue user's data
  * @returns {Promise<Array<{contactId, status, messageId?, error?}>>}
@@ -114,39 +115,64 @@ async function sendPushToLinkedContacts(userId, userData) {
       return results;
     }
 
-    console.log(`[Notification] Found ${contactsSnapshot.size} contacts to notify:`);
-
+    // Collect all linkedUids
+    const contacts = [];
+    const linkedUids = [];
     for (const contactDoc of contactsSnapshot.docs) {
       const contact = contactDoc.data();
-      const linkedUid = contact.linkedUid;
-      const contactName = contact.name || 'Unknown';
-
-      console.log(`[Notification]   - Contact: ${contactName}, linkedUid: ${linkedUid}`);
-
-      if (!linkedUid) {
-        console.log(`[Notification]     → SKIP: No linkedUid`);
+      if (contact.linkedUid) {
+        contacts.push({ contactId: contactDoc.id, ...contact });
+        linkedUids.push(contact.linkedUid);
+      } else {
         results.push({
           contactId: contactDoc.id,
           status: 'failed',
           error: 'NO_LINKED_UID',
         });
-        continue;
       }
+    }
 
-      // Get linked user's FCM token
-      const linkedUserDoc = await db.collection('users').doc(linkedUid).get();
+    if (linkedUids.length === 0) {
+      console.log(`[Notification] No valid linkedUids found`);
+      console.log(`[Notification] ========================================`);
+      return results;
+    }
 
-      if (!linkedUserDoc.exists) {
+    console.log(`[Notification] Found ${contacts.length} contacts to notify`);
+
+    // OPTIMIZATION: Batch fetch all linked users in ONE query using getAll()
+    const linkedUserRefs = linkedUids.map(uid => db.collection('users').doc(uid));
+    const linkedUserDocs = await db.getAll(...linkedUserRefs);
+
+    // Create a map for quick lookup
+    const linkedUsersMap = new Map();
+    linkedUserDocs.forEach((doc, index) => {
+      if (doc.exists) {
+        linkedUsersMap.set(linkedUids[index], doc.data());
+      }
+    });
+
+    console.log(`[Notification] Fetched ${linkedUsersMap.size} linked users in 1 batch query`);
+
+    // Now send notifications
+    for (const contact of contacts) {
+      const linkedUid = contact.linkedUid;
+      const contactName = contact.name || 'Unknown';
+
+      console.log(`[Notification]   - Contact: ${contactName}, linkedUid: ${linkedUid}`);
+
+      const linkedUserData = linkedUsersMap.get(linkedUid);
+
+      if (!linkedUserData) {
         console.log(`[Notification]     → SKIP: User not found in database`);
         results.push({
-          contactId: contactDoc.id,
+          contactId: contact.contactId,
           status: 'failed',
           error: 'USER_NOT_FOUND',
         });
         continue;
       }
 
-      const linkedUserData = linkedUserDoc.data();
       const fcmToken = linkedUserData.fcmToken;
       const linkedUserName = linkedUserData.displayName || linkedUserData.email || linkedUid;
       const linkedUserLanguage = linkedUserData.language || linkedUserData.settings?.language || 'en';
@@ -154,7 +180,7 @@ async function sendPushToLinkedContacts(userId, userData) {
       if (!fcmToken) {
         console.log(`[Notification]     → SKIP: ${linkedUserName} has no FCM token`);
         results.push({
-          contactId: contactDoc.id,
+          contactId: contact.contactId,
           status: 'failed',
           error: 'NO_FCM_TOKEN',
         });
@@ -167,23 +193,23 @@ async function sendPushToLinkedContacts(userId, userData) {
       const messages = getMessages(linkedUserLanguage);
 
       // Send push notification
-      const notification = {
+      const notificationPayload = {
         title: messages.alertTitle,
         body: messages.alertBody(userName),
       };
 
-      const data = {
+      const dataPayload = {
         type: 'OVERDUE_ALERT',
         fromUserId: userId,
         fromUserName: userName,
       };
 
-      const sendResult = await sendPushNotification(fcmToken, notification, data);
+      const sendResult = await sendPushNotification(fcmToken, notificationPayload, dataPayload);
 
       if (sendResult.success) {
         console.log(`[Notification]     → SUCCESS: Sent to ${linkedUserName}`);
         results.push({
-          contactId: contactDoc.id,
+          contactId: contact.contactId,
           linkedUid,
           status: 'sent',
           messageId: sendResult.messageId,
@@ -191,14 +217,14 @@ async function sendPushToLinkedContacts(userId, userData) {
       } else {
         console.log(`[Notification]     → FAILED: ${sendResult.error}`);
         results.push({
-          contactId: contactDoc.id,
+          contactId: contact.contactId,
           linkedUid,
           status: 'failed',
           error: sendResult.error,
           message: sendResult.message,
         });
 
-        // If token is invalid, remove it from the linked user
+        // If token is invalid, remove it (this is rare, so 1 write is acceptable)
         if (sendResult.error === 'INVALID_TOKEN') {
           await db.collection('users').doc(linkedUid).update({
             fcmToken: admin.firestore.FieldValue.delete(),

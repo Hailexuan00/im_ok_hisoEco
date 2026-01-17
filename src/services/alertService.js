@@ -261,11 +261,6 @@ async function processAlertEscalation(userId, userData, alertId, alert) {
         currentStepIndex: currentStepIndex + 1,
       });
 
-    // Update user's lastEscalationAt
-    await db.collection('users').doc(userId).update({
-      'status.lastEscalationAt': admin.firestore.FieldValue.serverTimestamp(),
-    });
-
     console.log(`[Escalation] Step ${currentStepIndex} completed with status: ${result.success ? 'sent' : 'failed'}`);
   } catch (error) {
     console.error(`[Escalation] Error processing step:`, error);
