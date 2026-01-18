@@ -86,6 +86,7 @@ async function sendViaSendGrid({ to, subject, text, html }) {
 
 /**
  * Nodemailer (Gmail SMTP)
+ * Configured with proper timeout and connection settings
  */
 async function sendViaNodemailer({ to, subject, text, html }) {
   const nodemailer = require('nodemailer');
@@ -100,7 +101,13 @@ async function sendViaNodemailer({ to, subject, text, html }) {
   const transporter = nodemailer.createTransport({
     service: 'gmail',
     auth: { user, pass },
+    // Timeout settings
+    connectionTimeout: 10000, // 10 seconds
+    greetingTimeout: 10000,
+    socketTimeout: 15000,
   });
+
+  console.log(`[Email] Connecting to Gmail SMTP for ${to}...`);
 
   const info = await transporter.sendMail({
     from: `${FROM_NAME} <${user}>`,
