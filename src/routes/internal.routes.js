@@ -444,6 +444,104 @@ router.post('/test-email', verifyCronSecret, async (req, res) => {
 });
 
 /**
+ * POST /internal/test-overdue
+ * Set a device to overdue state and trigger scan immediately
+ * For end-to-end testing
+ *
+ * Body: { "installId": "...", "minutesOverdue": 5 }
+ */
+router.post('/test-overdue', verifyCronSecret, async (req, res) => {
+  try {
+    const { installId, minutesOverdue = 6 } = req.body;
+
+    if (!installId) {
+      return res.status(400).json({ ok: false, error: 'installId is required' });
+    }
+
+    const deviceRef = db.collection(DEVICES_COLLECTION).doc(installId);
+    const doc = await deviceRef.get();
+
+    if (!doc.exists) {
+      return res.status(404).json({ ok: false, error: 'Device not found' });
+    }
+
+    // Set nextDueAt to X minutes ago (making it overdue)
+    const overdueTime = Date.now() - (minutesOverdue * 60 * 1000);
+    const nextDueAt = admin.firestore.Timestamp.fromMillis(overdueTime);
+
+    await deviceRef.update({
+      nextDueAt,
+      overdueNotifiedAt: null, // Reset to allow notification
+      status: 'OK',
+      updatedAt: admin.firestore.Timestamp.now(),
+    });
+
+    console.log(`[TestOverdue] Set ${installId} to ${minutesOverdue} minutes overdue`);
+
+    // Now trigger scan
+    const runId = generateRunId();
+    const startTime = Date.now();
+
+    // Acquire lock
+    const lockResult = await acquireLock(runId);
+    if (!lockResult.acquired) {
+      return res.json({
+        ok: true,
+        setup: { installId, minutesOverdue, nextDueAt: new Date(overdueTime).toISOString() },
+        scan: { skipped: true, reason: 'lock_held' },
+      });
+    }
+
+    // Calculate cutoff (5 minutes ago)
+    const cutoffMs = Date.now() - 300 * 1000;
+    const cutoff = admin.firestore.Timestamp.fromMillis(cutoffMs);
+
+    // Query this specific device
+    const snapshot = await db
+      .collection(DEVICES_COLLECTION)
+      .where('overdueNotifiedAt', '==', null)
+      .where('nextDueAt', '<', cutoff)
+      .orderBy('nextDueAt')
+      .limit(10)
+      .get();
+
+    const stats = {
+      runId,
+      queriedCount: snapshot.docs.length,
+      emailsSent: 0,
+      emailsFailed: 0,
+      skippedAlreadyNotified: 0,
+    };
+
+    // Process only the test device
+    for (const docSnap of snapshot.docs) {
+      if (docSnap.id === installId) {
+        const result = await processOverdueDevice(docSnap, runId);
+        if (result.sent && result.success) {
+          stats.emailsSent++;
+        } else if (result.sent && !result.success) {
+          stats.emailsFailed++;
+        } else if (result.skipped && result.reason === 'already_notified') {
+          stats.skippedAlreadyNotified++;
+        }
+      }
+    }
+
+    stats.durationMs = Date.now() - startTime;
+    await releaseLock(runId, stats);
+
+    res.json({
+      ok: true,
+      setup: { installId, minutesOverdue, nextDueAt: new Date(overdueTime).toISOString() },
+      scan: stats,
+    });
+  } catch (error) {
+    console.error(`[TestOverdue] Error:`, error.message);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+/**
  * POST /internal/cron/force-release
  * Force release stuck lock (emergency use)
  */
