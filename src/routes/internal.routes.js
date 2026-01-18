@@ -399,6 +399,51 @@ router.get('/cron/status', verifyCronSecret, async (req, res) => {
 });
 
 /**
+ * POST /internal/test-email
+ * Test email sending directly (for debugging)
+ *
+ * Body: { "to": "email@example.com" }
+ */
+router.post('/test-email', verifyCronSecret, async (req, res) => {
+  try {
+    const { to } = req.body;
+
+    if (!to || !isValidEmail(to)) {
+      return res.status(400).json({ ok: false, error: 'Valid "to" email is required' });
+    }
+
+    console.log(`[TestEmail] Sending test email to ${to}...`);
+
+    const result = await sendOverdueAlert({
+      displayName: 'Test User',
+      emergencyEmail: to,
+      lastCheckinAt: new Date(),
+      graceSeconds: 300,
+    });
+
+    if (result.success) {
+      console.log(`[TestEmail] Success: ${result.providerId}`);
+      res.json({
+        ok: true,
+        message: 'Test email sent successfully',
+        to,
+        providerId: result.providerId,
+      });
+    } else {
+      console.error(`[TestEmail] Failed: ${result.error}`);
+      res.status(500).json({
+        ok: false,
+        error: result.error,
+        to,
+      });
+    }
+  } catch (error) {
+    console.error(`[TestEmail] Error:`, error.message);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+/**
  * POST /internal/cron/force-release
  * Force release stuck lock (emergency use)
  */
