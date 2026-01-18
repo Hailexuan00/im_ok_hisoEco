@@ -1,18 +1,11 @@
 {
   "indexes": [
     {
-      "collectionGroup": "users",
+      "collectionGroup": "devices",
       "queryScope": "COLLECTION",
       "fields": [
-        { "fieldPath": "isPaused", "order": "ASCENDING" },
-        { "fieldPath": "overdueCutoff", "order": "ASCENDING" }
-      ]
-    },
-    {
-      "collectionGroup": "alerts",
-      "queryScope": "COLLECTION_GROUP",
-      "fields": [
-        { "fieldPath": "status", "order": "ASCENDING" }
+        { "fieldPath": "overdueNotifiedAt", "order": "ASCENDING" },
+        { "fieldPath": "nextDueAt", "order": "ASCENDING" }
       ]
     }
   ],

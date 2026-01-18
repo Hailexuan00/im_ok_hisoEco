@@ -1,52 +1,71 @@
+/**
+ * IMOK Backend - Firestore Only
+ * No login required, uses installId as identifier
+ */
+
 const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+// Initialize Firebase (must be first)
 const { db } = require('./firebaseAdmin');
-const { initializeScheduler } = require('./jobs/scheduler');
 
+// Initialize Express
 const app = express();
 const PORT = process.env.PORT || 3000;
 
 // Middlewares
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
 
+// ============================================
 // Routes
+// ============================================
+
+// Root
 app.get('/', (req, res) => {
-  res.json({ message: 'Welcome to im_ok_be API' });
+  res.json({
+    name: 'IMOK Backend',
+    version: '2.0',
+    database: 'Firestore',
+    mode: 'installId (no login)',
+  });
 });
 
+// Health check
 app.get('/health', async (req, res) => {
   try {
-    await db.collection('_health').doc('ping').set({ at: Date.now() }, { merge: true });
+    // Quick Firestore check
+    await db.collection('_health').doc('ping').set({ t: Date.now() });
     res.json({ ok: true, timestamp: new Date().toISOString() });
   } catch (e) {
-    res.status(500).json({ ok: false, error: String(e) });
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 
 // API routes
-const apiRoutes = require('./routes');
-app.use('/api', apiRoutes);
+const deviceRoutes = require('./routes/device.routes');
+const internalRoutes = require('./routes/internal.routes');
 
-// Error handling middleware
+app.use('/api/device', deviceRoutes);
+app.use('/internal', internalRoutes);
+
+// Error handling
 app.use((err, req, res, next) => {
-  console.error(err.stack);
-  res.status(500).json({ error: 'Something went wrong!' });
+  console.error('[Error]', err.stack);
+  res.status(500).json({ ok: false, error: 'Internal server error' });
 });
 
-// 404 handler
+// 404
 app.use((req, res) => {
-  res.status(404).json({ error: 'Route not found' });
+  res.status(404).json({ ok: false, error: 'Route not found' });
 });
 
+// Start server
 app.listen(PORT, () => {
-  console.log(`Server is running on port ${PORT}`);
-
-  // Initialize scheduled jobs
-  initializeScheduler();
+  console.log(`[Server] Running on port ${PORT}`);
+  console.log('[Server] Database: Firestore');
+  console.log('[Server] Mode: installId (no login)');
 });
 
 module.exports = app;
