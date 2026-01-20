@@ -19,6 +19,29 @@ function isValidEmail(email) {
 }
 
 /**
+ * Validate phone number (basic check)
+ * Accepts: 0xxxxxxxxx, 84xxxxxxxxx, +84xxxxxxxxx
+ */
+function isValidPhone(phone) {
+  if (!phone || typeof phone !== 'string') return false;
+  const cleaned = phone.replace(/[\s\-\.]/g, '');
+  return /^(\+84|84|0)\d{9,10}$/.test(cleaned);
+}
+
+/**
+ * Validate and clean phone array
+ * @param {any} phones - Input phones array
+ * @returns {string[]} - Cleaned valid phone numbers
+ */
+function cleanPhoneArray(phones) {
+  if (!phones || !Array.isArray(phones)) return [];
+  return phones
+    .filter(p => typeof p === 'string' && isValidPhone(p))
+    .map(p => p.replace(/[\s\-\.]/g, '').trim())
+    .slice(0, 5); // Max 5 phone numbers
+}
+
+/**
  * POST /api/device/upsert
  * Register or update device
  *
@@ -26,12 +49,21 @@ function isValidEmail(email) {
  *   installId: string (UUID),
  *   displayName: string,
  *   emergencyEmail: string,
+ *   emergencyPhones?: string[] (optional, for SMS alerts),
+ *   smsEnabled?: boolean (optional, default false),
  *   intervalSeconds?: number (default 86400)
  * }
  */
 router.post('/upsert', async (req, res) => {
   try {
-    const { installId, displayName, emergencyEmail, intervalSeconds } = req.body;
+    const {
+      installId,
+      displayName,
+      emergencyEmail,
+      emergencyPhones,
+      smsEnabled,
+      intervalSeconds,
+    } = req.body;
 
     // Validation
     if (!installId || typeof installId !== 'string') {
@@ -42,20 +74,34 @@ router.post('/upsert', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'Valid emergencyEmail is required' });
     }
 
+    // Clean and validate phone numbers
+    const cleanedPhones = cleanPhoneArray(emergencyPhones);
+
     const docRef = db.collection(DEVICES_COLLECTION).doc(installId);
     const doc = await docRef.get();
     const now = admin.firestore.Timestamp.now();
 
     if (doc.exists) {
       // Update existing device
-      await docRef.update({
-        displayName: displayName || doc.data().displayName || '',
+      const existingData = doc.data();
+      const updateData = {
+        displayName: displayName || existingData.displayName || '',
         emergencyEmail,
-        intervalSeconds: intervalSeconds || doc.data().intervalSeconds || DEFAULT_INTERVAL_SECONDS,
+        intervalSeconds: intervalSeconds || existingData.intervalSeconds || DEFAULT_INTERVAL_SECONDS,
         updatedAt: now,
-      });
+      };
 
-      console.log(`[Device] Updated: ${installId}`);
+      // Update SMS fields if provided
+      if (emergencyPhones !== undefined) {
+        updateData.emergencyPhones = cleanedPhones;
+      }
+      if (smsEnabled !== undefined) {
+        updateData.smsEnabled = Boolean(smsEnabled);
+      }
+
+      await docRef.update(updateData);
+
+      console.log(`[Device] Updated: ${installId}, smsEnabled: ${updateData.smsEnabled}, phones: ${cleanedPhones.length}`);
     } else {
       // Create new device
       const interval = intervalSeconds || DEFAULT_INTERVAL_SECONDS;
@@ -65,17 +111,20 @@ router.post('/upsert', async (req, res) => {
         installId,
         displayName: displayName || '',
         emergencyEmail,
+        emergencyPhones: cleanedPhones,
+        smsEnabled: Boolean(smsEnabled),
         intervalSeconds: interval,
         graceSeconds: DEFAULT_GRACE_SECONDS,
         lastCheckinAt: now,
         nextDueAt,
         status: 'OK',
         overdueNotifiedAt: null,
+        overdueSmsNotifiedAt: null,
         createdAt: now,
         updatedAt: now,
       });
 
-      console.log(`[Device] Created: ${installId}`);
+      console.log(`[Device] Created: ${installId}, smsEnabled: ${Boolean(smsEnabled)}, phones: ${cleanedPhones.length}`);
     }
 
     res.json({ ok: true });
@@ -115,7 +164,8 @@ router.post('/checkin', async (req, res) => {
       lastCheckinAt: now,
       nextDueAt,
       status: 'OK',
-      overdueNotifiedAt: null, // Reset so next overdue can trigger alert
+      overdueNotifiedAt: null, // Reset so next overdue can trigger email alert
+      overdueSmsNotifiedAt: null, // Reset so next overdue can trigger SMS alert
       updatedAt: now,
     });
 
@@ -157,6 +207,9 @@ router.get('/:installId/status', async (req, res) => {
         nextDueAt: data.nextDueAt?.toDate?.()?.toISOString() || null,
         intervalSeconds: data.intervalSeconds,
         graceSeconds: data.graceSeconds,
+        // SMS fields
+        smsEnabled: data.smsEnabled || false,
+        emergencyPhones: data.emergencyPhones || [],
       },
     });
   } catch (error) {

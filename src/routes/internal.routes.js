@@ -14,6 +14,14 @@ const express = require('express');
 const router = express.Router();
 const { db, admin } = require('../firebaseAdmin');
 const { sendOverdueAlert } = require('../services/emailSender');
+const {
+  sendSmsToMany,
+  buildOverdueMessage,
+  isSmsConfigured,
+  getSmsProviderInfo,
+  normalizePhoneVN,
+  isValidE164,
+} = require('../services/smsSender');
 
 const DEVICES_COLLECTION = 'devices';
 const ALERTS_COLLECTION = 'alerts';
@@ -112,14 +120,22 @@ async function releaseLock(runId, stats = {}) {
 
 /**
  * Log alert to Firestore
+ * @param {string} installId
+ * @param {string} toTarget - email or phone
+ * @param {string} type - 'OVERDUE_EMAIL' or 'OVERDUE_SMS'
+ * @param {string} status - 'SUCCESS' or 'FAIL'
+ * @param {string} provider - email/sms provider name
+ * @param {string|null} providerId
+ * @param {string|null} errorMsg
  */
-async function logAlert(installId, toEmail, status, providerId = null, errorMsg = null) {
+async function logAlert(installId, toTarget, type, status, provider = null, providerId = null, errorMsg = null) {
   try {
     await db.collection(ALERTS_COLLECTION).add({
       installId,
-      toEmail,
-      type: 'OVERDUE_EMAIL',
+      ...(type === 'OVERDUE_EMAIL' ? { toEmail: toTarget } : { toPhone: toTarget }),
+      type,
       status,
+      provider,
       providerId,
       error: errorMsg,
       triggeredAt: admin.firestore.Timestamp.now(),
@@ -132,14 +148,15 @@ async function logAlert(installId, toEmail, status, providerId = null, errorMsg 
 /**
  * Process single overdue device with idempotency
  *
- * CRITICAL: Email is sent OUTSIDE transaction to avoid:
+ * CRITICAL: Email/SMS is sent OUTSIDE transaction to avoid:
  * 1. Long-running transaction timeout
  * 2. Email sent but transaction rolled back
  *
  * Flow:
  * 1. Transaction: Check if still eligible, mark as notified
- * 2. If marked: Send email
+ * 2. If marked: Send email (always) and SMS (if enabled)
  * 3. If email fails: We don't rollback (device already marked, will need manual intervention)
+ * 4. SMS has separate idempotency via overdueSmsNotifiedAt
  */
 async function processOverdueDevice(deviceDoc, runId) {
   const installId = deviceDoc.id;
@@ -151,67 +168,141 @@ async function processOverdueDevice(deviceDoc, runId) {
       const freshDoc = await transaction.get(deviceRef);
 
       if (!freshDoc.exists) {
-        return { shouldSend: false, reason: 'not_found' };
+        return { shouldSendEmail: false, shouldSendSms: false, reason: 'not_found' };
       }
 
       const data = freshDoc.data();
 
-      // Double-check: still not notified?
-      if (data.overdueNotifiedAt !== null) {
-        return { shouldSend: false, reason: 'already_notified' };
+      // Check email eligibility
+      const shouldSendEmail = data.overdueNotifiedAt === null && isValidEmail(data.emergencyEmail);
+
+      // Check SMS eligibility
+      const shouldSendSms =
+        data.smsEnabled === true &&
+        data.overdueSmsNotifiedAt === null &&
+        Array.isArray(data.emergencyPhones) &&
+        data.emergencyPhones.length > 0;
+
+      if (!shouldSendEmail && !shouldSendSms) {
+        if (data.overdueNotifiedAt !== null) {
+          return { shouldSendEmail: false, shouldSendSms: false, reason: 'already_notified' };
+        }
+        if (!isValidEmail(data.emergencyEmail)) {
+          return { shouldSendEmail: false, shouldSendSms: false, reason: 'invalid_email', email: data.emergencyEmail };
+        }
+        return { shouldSendEmail: false, shouldSendSms: false, reason: 'no_action_needed' };
       }
 
-      // Validate email
-      if (!isValidEmail(data.emergencyEmail)) {
-        return { shouldSend: false, reason: 'invalid_email', email: data.emergencyEmail };
-      }
-
-      // Mark as notified BEFORE sending (optimistic)
-      transaction.update(deviceRef, {
+      // Prepare update object
+      const updateObj = {
         status: 'OVERDUE',
-        overdueNotifiedAt: admin.firestore.Timestamp.now(),
         updatedAt: admin.firestore.Timestamp.now(),
-      });
+      };
+
+      // Mark email as notified if sending email
+      if (shouldSendEmail) {
+        updateObj.overdueNotifiedAt = admin.firestore.Timestamp.now();
+      }
+
+      // Note: SMS notification flag will be set AFTER successful send
+
+      transaction.update(deviceRef, updateObj);
 
       return {
-        shouldSend: true,
+        shouldSendEmail,
+        shouldSendSms,
         installId,
         displayName: data.displayName || `IMOK User #${installId.slice(-4).toUpperCase()}`,
         emergencyEmail: data.emergencyEmail,
+        emergencyPhones: data.emergencyPhones || [],
         lastCheckinAt: data.lastCheckinAt?.toDate?.() || null,
+        nextDueAt: data.nextDueAt?.toDate?.() || null,
         graceSeconds: data.graceSeconds || 300,
       };
     });
 
-    // Step 2: Send email if eligible
-    if (!txResult.shouldSend) {
+    // Step 2: Check if any action needed
+    if (!txResult.shouldSendEmail && !txResult.shouldSendSms) {
       return { skipped: true, reason: txResult.reason, installId };
     }
 
-    // Send email (outside transaction)
-    const emailResult = await sendOverdueAlert({
-      displayName: txResult.displayName,
-      emergencyEmail: txResult.emergencyEmail,
-      lastCheckinAt: txResult.lastCheckinAt,
-      graceSeconds: txResult.graceSeconds,
-    });
-
-    // Log result
-    await logAlert(
+    const result = {
+      sent: false,
       installId,
-      txResult.emergencyEmail,
-      emailResult.success ? 'SUCCESS' : 'FAIL',
-      emailResult.providerId,
-      emailResult.error
-    );
+      email: null,
+      emailSuccess: false,
+      smsResults: [],
+      smsSentCount: 0,
+    };
+
+    // Step 3: Send email if eligible
+    if (txResult.shouldSendEmail) {
+      const emailResult = await sendOverdueAlert({
+        displayName: txResult.displayName,
+        emergencyEmail: txResult.emergencyEmail,
+        lastCheckinAt: txResult.lastCheckinAt,
+        graceSeconds: txResult.graceSeconds,
+      });
+
+      result.sent = true;
+      result.email = txResult.emergencyEmail;
+      result.emailSuccess = emailResult.success;
+      result.emailProviderId = emailResult.providerId;
+      result.emailError = emailResult.error;
+
+      // Log email result
+      await logAlert(
+        installId,
+        txResult.emergencyEmail,
+        'OVERDUE_EMAIL',
+        emailResult.success ? 'SUCCESS' : 'FAIL',
+        'email',
+        emailResult.providerId,
+        emailResult.error
+      );
+    }
+
+    // Step 4: Send SMS if eligible
+    if (txResult.shouldSendSms && isSmsConfigured()) {
+      const smsMessage = buildOverdueMessage(txResult.displayName, txResult.nextDueAt);
+      const smsResult = await sendSmsToMany(txResult.emergencyPhones, smsMessage);
+
+      result.sent = true;
+      result.smsResults = smsResult.results;
+      result.smsSentCount = smsResult.sentCount;
+      result.smsFailedCount = smsResult.failedCount;
+
+      // Log each SMS result
+      for (const smsRes of smsResult.results) {
+        await logAlert(
+          installId,
+          smsRes.to,
+          'OVERDUE_SMS',
+          smsRes.ok ? 'SUCCESS' : 'FAIL',
+          smsRes.provider,
+          smsRes.messageId,
+          smsRes.error
+        );
+      }
+
+      // Only mark SMS as notified if at least one SMS was sent successfully
+      if (smsResult.sentCount > 0) {
+        await deviceRef.update({
+          overdueSmsNotifiedAt: admin.firestore.Timestamp.now(),
+        });
+        console.log(`[Cron:${runId}] SMS notified: ${installId}, sent to ${smsResult.sentCount} numbers`);
+      }
+    }
 
     return {
-      sent: true,
+      sent: result.sent,
       installId,
-      email: txResult.emergencyEmail,
-      success: emailResult.success,
-      providerId: emailResult.providerId,
-      error: emailResult.error,
+      email: result.email,
+      success: result.emailSuccess || result.smsSentCount > 0,
+      providerId: result.emailProviderId,
+      error: result.emailError,
+      smsSentCount: result.smsSentCount,
+      smsFailedCount: result.smsFailedCount,
     };
   } catch (error) {
     console.error(`[Cron:${runId}] Process ${installId} error:`, error.message);
@@ -242,6 +333,8 @@ router.get('/cron/scan-overdue', verifyCronSecret, async (req, res) => {
     emailsAttempted: 0,
     emailsSent: 0,
     emailsFailed: 0,
+    smsSent: 0,
+    smsFailed: 0,
     skippedAlreadyNotified: 0,
     skippedInvalidEmail: 0,
     errors: [],
@@ -313,14 +406,25 @@ router.get('/cron/scan-overdue', verifyCronSecret, async (req, res) => {
             console.warn(`[Cron:${runId}] Skipped ${result.installId}: invalid email`);
           }
         } else if (result.sent) {
-          stats.emailsAttempted++;
-          if (result.success) {
-            stats.emailsSent++;
-            console.log(`[Cron:${runId}] Sent: ${result.installId} -> ${result.email}`);
-          } else {
-            stats.emailsFailed++;
-            stats.errors.push({ installId: result.installId, error: result.error });
-            console.error(`[Cron:${runId}] Failed: ${result.installId} - ${result.error}`);
+          // Track email
+          if (result.email) {
+            stats.emailsAttempted++;
+            if (result.success) {
+              stats.emailsSent++;
+              console.log(`[Cron:${runId}] Email sent: ${result.installId} -> ${result.email}`);
+            } else if (result.error) {
+              stats.emailsFailed++;
+              stats.errors.push({ installId: result.installId, type: 'email', error: result.error });
+              console.error(`[Cron:${runId}] Email failed: ${result.installId} - ${result.error}`);
+            }
+          }
+          // Track SMS
+          if (result.smsSentCount > 0) {
+            stats.smsSent += result.smsSentCount;
+            console.log(`[Cron:${runId}] SMS sent: ${result.installId} -> ${result.smsSentCount} numbers`);
+          }
+          if (result.smsFailedCount > 0) {
+            stats.smsFailed += result.smsFailedCount;
           }
         } else if (result.error) {
           stats.emailsFailed++;
@@ -441,6 +545,91 @@ router.post('/test-email', verifyCronSecret, async (req, res) => {
     console.error(`[TestEmail] Error:`, error.message);
     res.status(500).json({ ok: false, error: error.message });
   }
+});
+
+/**
+ * POST /internal/test-sms
+ * Test SMS sending directly (for debugging)
+ *
+ * Body: { "to": ["0399123456", "0912345678"], "message": "Test message" }
+ */
+router.post('/test-sms', verifyCronSecret, async (req, res) => {
+  try {
+    const { to, message } = req.body;
+
+    // Validate input
+    if (!to || !Array.isArray(to) || to.length === 0) {
+      return res.status(400).json({ ok: false, error: '"to" must be a non-empty array of phone numbers' });
+    }
+
+    if (!message || typeof message !== 'string' || message.trim().length === 0) {
+      return res.status(400).json({ ok: false, error: '"message" is required' });
+    }
+
+    // Check if SMS is configured
+    if (!isSmsConfigured()) {
+      const providerInfo = getSmsProviderInfo();
+      return res.status(400).json({
+        ok: false,
+        error: `SMS provider "${providerInfo.provider}" is not configured. Check environment variables.`,
+        provider: providerInfo,
+      });
+    }
+
+    console.log(`[TestSms] Sending test SMS to ${to.length} numbers...`);
+
+    // Validate and normalize phone numbers
+    const validPhones = [];
+    const invalidPhones = [];
+
+    for (const phone of to) {
+      const normalized = normalizePhoneVN(phone);
+      if (normalized && isValidE164(normalized)) {
+        validPhones.push({ original: phone, normalized });
+      } else {
+        invalidPhones.push({ original: phone, error: 'Invalid format' });
+      }
+    }
+
+    if (validPhones.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        error: 'No valid phone numbers provided',
+        invalidPhones,
+      });
+    }
+
+    // Send SMS to valid numbers
+    const smsResult = await sendSmsToMany(
+      validPhones.map(p => p.normalized),
+      message.trim()
+    );
+
+    console.log(`[TestSms] Completed: sent=${smsResult.sentCount}, failed=${smsResult.failedCount}`);
+
+    res.json({
+      ok: smsResult.sentCount > 0,
+      message: `SMS sent to ${smsResult.sentCount}/${validPhones.length} numbers`,
+      provider: getSmsProviderInfo(),
+      results: smsResult.results,
+      invalidPhones: invalidPhones.length > 0 ? invalidPhones : undefined,
+    });
+  } catch (error) {
+    console.error(`[TestSms] Error:`, error.message);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
+/**
+ * GET /internal/sms/status
+ * Get SMS provider configuration status
+ */
+router.get('/sms/status', verifyCronSecret, async (req, res) => {
+  const providerInfo = getSmsProviderInfo();
+  res.json({
+    ok: true,
+    ...providerInfo,
+  });
 });
 
 /**
